@@ -51,9 +51,6 @@ Edit file `config.js`:
 ```javascript
 export default {
   owner: '6289648388784',  // Ganti dengan nomor WhatsApp owner
-  ptero: {
-    url: 'https://actualization.biz.id',
-    apiKey: 'your-api-key-here'
   }
 };
 ```
