@@ -50,7 +50,7 @@ Edit file `config.js`:
 
 ```javascript
 export default {
-  owner: '6289648388784',  // Ganti dengan nomor WhatsApp owner
+  owner: 'Your-Number',  // Ganti dengan nomor WhatsApp owner
   }
 };
 ```
