@@ -1,45 +1,99 @@
-import baileys from 'baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage } from '@rexxhayanasi/elaina-baileys';
 import { Boom } from '@hapi/boom';
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
 import chalk from 'chalk';
 import config from './config.js';
-import { downloadMediaMessage } from 'baileys';
-
-const { useMultiFileAuthState, DisconnectReason } = baileys;
-const makeWASocket = baileys.makeWASocket || baileys.default || baileys;
 
 // Anonymous chat state
 const waitingAnon = new Set();
 const anonPartners = new Map();
 
+// Store untuk messages (untuk getMessage function)
+const messageStore = new Map();
+
 async function startBot() {
-  const logger = pino({ level: 'silent' });
+  const logger = pino({ level: 'error' });
   const { state, saveCreds } = await useMultiFileAuthState('./session');
   const myJid = state.creds.me?.id;
-  const sock = makeWASocket({ auth: state, printQRInTerminal: false, logger });
+  
+  // getMessage function - penting untuk resend messages dan decrypt poll votes
+  const getMessage = async (key) => {
+    if (messageStore.has(key.id)) {
+      return messageStore.get(key.id);
+    }
+    return proto.WebMessageInfo.fromObject({
+      key,
+      message: proto.Message.fromObject({})
+    });
+  };
+
+  const sock = makeWASocket({
+    auth: state,
+    printQRInTerminal: false,
+    logger,
+    browser: ['Ubuntu', 'Chrome', '120.0.0.0'],
+    // Jangan set online status saat connect (agar tetap dapat notifikasi)
+    markOnlineOnConnect: false,
+    // Function untuk retrieve messages
+    getMessage,
+    // Uncomment jika ingin emulate desktop (sync full history)
+    // syncFullHistory: false,
+  });
 
   sock.ev.on('connection.update', (update) => {
     const { connection, qr, lastDisconnect } = update;
+    
+    // Handle QR Code
     if (qr) {
-      qrcode.generate(qr, { small: true });
-      console.log(chalk.yellow('Silakan scan QR code untuk login'));
+      console.log(chalk.cyan('\n╔════════════════════════════════════╗'));
+      console.log(chalk.cyan('║  Scan QR Code di bawah ini dengan  ║'));
+      console.log(chalk.cyan('║  WhatsApp Anda untuk terkoneksi    ║'));
+      console.log(chalk.cyan('╚════════════════════════════════════╝\n'));
+      qrcode.generate(qr, { small: true, width: 3 });
+      console.log(chalk.yellow('\n→ Jika QR tidak terlihat, coba scroll ke atas\n'));
     }
-    if (connection === 'open') {
-      console.log(chalk.green('WhatsApp Bot tersambung'));
-    }
+    
+    // Handle connection status
     if (connection === 'close') {
-      const shouldReconnect = (lastDisconnect.error instanceof Boom) && lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut;
-      console.log(chalk.red('Koneksi terputus'), 'Reconnect:', shouldReconnect);
-      if (shouldReconnect) startBot();
+      const statusCode = lastDisconnect?.error?.output?.statusCode;
+      
+      // Jika disconnect karena restart required, buat socket baru
+      if (statusCode === DisconnectReason.restartRequired) {
+        console.log(chalk.yellow('[⟳ Restart Required]'), 'Membuat connection baru...');
+        setTimeout(() => startBot(), 3000);
+      }
+      // Jika normal disconnect (bukan logout)
+      else if (statusCode !== DisconnectReason.loggedOut) {
+        console.log(chalk.red('[❌ Koneksi Terputus]'), 'Mencoba reconnect...');
+        setTimeout(() => startBot(), 3000);
+      } 
+      // Jika user logout
+      else {
+        console.log(chalk.red('[❌ Logout]'), 'Bot di-logout. Hapus folder session untuk login ulang.');
+      }
+    } else if (connection === 'open') {
+      console.log(chalk.green('[✓ Terhubung]'), 'Bot berhasil connect ke WhatsApp!');
+    } else if (connection === 'connecting') {
+      console.log(chalk.blue('[⟳ Menghubungkan...]'), 'Sedang terhubung ke WhatsApp...');
     }
   });
 
+
+  // Simpan credentials setiap kali ada update
   sock.ev.on('creds.update', saveCreds);
 
-  sock.ev.on('messages.upsert', async ({ messages }) => {
+  // Handle incoming messages
+  sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (!messages || !messages[0]) return;
-    const msg = messages[0];
+    
+    // Store messages untuk getMessage function
+    for (const msg of messages) {
+      messageStore.set(msg.key.id, msg);
+    }
+    
+    try {
+      const msg = messages[0];
     if (msg.key.fromMe) return;
     const sender = msg.key.remoteJid;
     // Button-based anon interactions
@@ -130,6 +184,9 @@ async function startBot() {
         console.error('[SETPPBOT ERROR]', e);
         await sock.sendMessage(sender, { text: 'Gagal update foto profil.' });
       }
+    }
+    } catch (error) {
+      console.error('Error handling message:', error);
     }
   });
 }
